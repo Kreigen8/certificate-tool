@@ -1,5 +1,7 @@
 import re
 import hashlib
+import os
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 import tkinter as tk
@@ -216,6 +218,197 @@ def safe_rename_target(path: Path, new_stem: str) -> Path:
         if not cand.exists():
             return cand
         i += 1
+
+
+def compact_name_for_archive(raw_name: str) -> str:
+    name = normalize_person_name(raw_name)
+    parts = [p for p in name.split(" ") if p]
+    if not parts:
+        return "CONTAINER"
+
+    surname = parts[0]
+    firstname = parts[1] if len(parts) >= 2 else ""
+    patronymic = parts[2] if len(parts) >= 3 else ""
+
+    initials = ""
+    if firstname:
+        initials += firstname[0]
+    if patronymic:
+        initials += patronymic[0]
+
+    return make_safe_name(f"{surname}{initials}")
+
+
+def safe_output_path(parent: Path, stem: str, suffix: str) -> Path:
+    safe_stem = make_safe_name(stem)
+    candidate = parent / f"{safe_stem}{suffix}"
+    if not candidate.exists():
+        return candidate
+
+    i = 1
+    while True:
+        cand = parent / f"{safe_stem} ({i}){suffix}"
+        if not cand.exists():
+            return cand
+        i += 1
+
+
+def build_container_zip_name(raw_name: str, end_s: str) -> str:
+    base = compact_name_for_archive(raw_name)
+    if end_s:
+        return f"{base}-{end_s}"
+    return base
+
+
+DRIVE_REMOVABLE = 2
+DRIVE_FIXED = 3
+_SKIP_DIR_NAMES = {"$recycle.bin", "system volume information"}
+
+
+def iter_drive_roots_for_container_search():
+    try:
+        bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+    except Exception:
+        bitmask = 0
+
+    removable = []
+    fixed = []
+
+    for i in range(26):
+        if not (bitmask & (1 << i)):
+            continue
+        letter = chr(ord("A") + i)
+        root = f"{letter}:\\"
+        try:
+            drive_type = ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(root))
+        except Exception:
+            continue
+
+        p = Path(root)
+        if drive_type == DRIVE_REMOVABLE:
+            removable.append(p)
+        elif drive_type == DRIVE_FIXED:
+            fixed.append(p)
+
+    # Некоторые USB-флешки Windows показывает как fixed disk.
+    # Поэтому сначала проверяем removable, потом fixed.
+    return removable + fixed
+
+
+def is_flash_unique_name(unique_name: str) -> bool:
+    u = (unique_name or "").replace("/", "\\").strip().upper()
+    return u.startswith("FAT") or u.startswith("FLASH")
+
+
+def build_container_path_candidates(unique_name: str, container_name: str):
+    candidates = []
+
+    def add_candidate(parts):
+        clean = [p.strip() for p in parts if p and p.strip()]
+        if not clean:
+            return
+        candidates.append(tuple(clean))
+
+    for raw in (unique_name, container_name):
+        if not raw:
+            continue
+        parts = [p for p in str(raw).replace("/", "\\").split("\\") if p]
+        if not parts:
+            continue
+
+        add_candidate(parts)
+        add_candidate([parts[-1]])
+
+        if len(parts) >= 2:
+            add_candidate([parts[-2]])
+            add_candidate(parts[-2:])
+
+        if parts[0].upper().startswith("FAT") or parts[0].upper().startswith("FLASH"):
+            add_candidate(parts[1:])
+            if len(parts) > 2:
+                add_candidate(parts[1:-1])
+                add_candidate(parts[2:-1])
+            if len(parts) >= 2:
+                add_candidate([parts[-2]])
+
+    unique = []
+    seen = set()
+    for parts in candidates:
+        key = "\\".join(parts).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(parts)
+    return unique
+
+
+def _find_dir_by_name(root: Path, target_names: set, max_depth: int = 5):
+    def walk(cur: Path, depth: int):
+        try:
+            entries = list(os.scandir(cur))
+        except Exception:
+            return None
+
+        for entry in entries:
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+            except Exception:
+                continue
+
+            entry_name_l = entry.name.lower()
+            if entry_name_l in _SKIP_DIR_NAMES:
+                continue
+
+            p = Path(entry.path)
+            if entry_name_l in target_names:
+                return p
+
+            if depth < max_depth:
+                found = walk(p, depth + 1)
+                if found:
+                    return found
+        return None
+
+    return walk(root, 1)
+
+
+def find_container_folder_on_removable(unique_name: str, container_name: str):
+    candidates = build_container_path_candidates(unique_name, container_name)
+    if not candidates:
+        return None
+
+    target_leafs = {parts[-1].lower() for parts in candidates if parts}
+
+    for root in iter_drive_roots_for_container_search():
+        for parts in candidates:
+            try:
+                candidate = root.joinpath(*parts)
+            except Exception:
+                continue
+            try:
+                if candidate.is_dir():
+                    return candidate
+            except Exception:
+                pass
+
+        found = _find_dir_by_name(root, target_leafs, max_depth=3)
+        if found:
+            return found
+
+    return None
+
+
+def zip_folder_with_root(src_dir: Path, zip_path: Path) -> int:
+    files_count = 0
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for p in src_dir.rglob("*"):
+            if not p.is_file():
+                continue
+            arcname = str(p.relative_to(src_dir.parent))
+            zf.write(p, arcname=arcname)
+            files_count += 1
+    return files_count
 
 
 # =========================
@@ -1229,6 +1422,8 @@ class App(tk.Tk):
         self.csp_menu.add_command(label="Копировать серийный номер", command=lambda: self._csp_copy_field("serial"))
         self.csp_menu.add_command(label="Копировать отпечаток", command=lambda: self._csp_copy_field("thumb"))
         self.csp_menu.add_separator()
+        self.csp_menu.add_command(label="Сжать контейнер в ZIP", command=self._csp_zip_selected_container)
+        self.csp_menu.add_separator()
         self.csp_menu.add_command(label="Сделать контейнер экспортируемым", command=self._csp_make_exportable)
 
         self.tree_csp.bind("<Button-3>", self._csp_on_right_click, add=True)
@@ -1542,6 +1737,11 @@ class App(tk.Tk):
         # select row under cursor (without clearing multi-selection if already selected)
         if iid not in self.tree_csp.selection():
             self.tree_csp.selection_set(iid)
+
+        selected_rows = self._csp_rows_by_iids(self.tree_csp.selection())
+        zip_state = "normal" if self._csp_can_zip_rows(selected_rows) else "disabled"
+        self.csp_menu.entryconfig("Сжать контейнер в ZIP", state=zip_state)
+
         self.csp_menu.tk_popup(event.x_root, event.y_root)
 
     def _csp_get_first_selected_row(self):
@@ -1552,6 +1752,106 @@ class App(tk.Tk):
         if not rows:
             return None
         return rows[0]
+
+    def _csp_is_flash_row(self, row) -> bool:
+        return bool(row) and is_flash_unique_name(row.get("unique", ""))
+
+    def _csp_can_zip_row(self, row) -> bool:
+        if not self._csp_is_flash_row(row):
+            return False
+        if not row.get("has_cert"):
+            return False
+        if not (row.get("cn") or "").strip():
+            return False
+        if not (row.get("end") or "").strip():
+            return False
+        return True
+
+    def _csp_can_zip_rows(self, rows) -> bool:
+        rows = rows or []
+        if not rows:
+            return False
+        return all(self._csp_can_zip_row(row) for row in rows)
+
+    def _csp_zip_selected_container(self):
+        rows = self._csp_rows_by_iids(self.tree_csp.selection())
+        if not rows:
+            return
+
+        invalid_rows = [row for row in rows if not self._csp_can_zip_row(row)]
+        if invalid_rows:
+            messagebox.showinfo(
+                "ZIP",
+                "Архивация доступна только для контейнеров на флешке, у которых есть сертификат, ФИО и дата окончания."
+            )
+            return
+
+        created = []
+        errors = []
+        total_files = 0
+
+        for row in rows:
+            src_dir = find_container_folder_on_removable(row.get("unique", ""), row.get("container", ""))
+            if not src_dir:
+                errors.append(
+                    f"{row.get('container', '')}: не удалось найти папку контейнера на подключенной флешке"
+                )
+                continue
+
+            zip_name = build_container_zip_name(row.get("cn", ""), row.get("end", ""))
+            zip_path = safe_output_path(src_dir.parent, zip_name, ".zip")
+
+            try:
+                files_count = zip_folder_with_root(src_dir, zip_path)
+                total_files += files_count
+                created.append((row.get("container", ""), src_dir, zip_path, files_count))
+            except Exception as e:
+                errors.append(f"{row.get('container', '')}: {e}")
+
+        if created and not errors:
+            if len(created) == 1:
+                cont, src_dir, zip_path, files_count = created[0]
+                self.status_var.set(f"Контейнер упакован в ZIP: {zip_path}")
+                messagebox.showinfo(
+                    "ZIP",
+                    f"Архив создан.\n\nПапка: {src_dir}\nФайлов: {files_count}\nZIP: {zip_path}"
+                )
+                return
+
+            self.status_var.set(f"Контейнеры упакованы в ZIP: {len(created)} шт.")
+            names = "\n".join(f"- {item[0]} -> {item[2]}" for item in created[:20])
+            extra = ""
+            if len(created) > 20:
+                extra = f"\n... и еще {len(created) - 20}"
+            messagebox.showinfo(
+                "ZIP",
+                f"Архивы созданы: {len(created)}\nФайлов внутри: {total_files}\n\n{names}{extra}"
+            )
+            return
+
+        if not created and errors:
+            err_text = "\n".join(f"- {e}" for e in errors[:20])
+            extra = ""
+            if len(errors) > 20:
+                extra = f"\n... и еще {len(errors) - 20}"
+            messagebox.showwarning("ZIP", f"Не удалось создать архивы.\n\n{err_text}{extra}")
+            return
+
+        self.status_var.set(f"Контейнеры упакованы в ZIP: {len(created)} из {len(rows)}")
+        ok_text = "\n".join(f"- {item[0]} -> {item[2]}" for item in created[:15])
+        err_text = "\n".join(f"- {e}" for e in errors[:15])
+        extra_ok = ""
+        extra_err = ""
+        if len(created) > 15:
+            extra_ok = f"\n... и еще {len(created) - 15}"
+        if len(errors) > 15:
+            extra_err = f"\n... и еще {len(errors) - 15}"
+        messagebox.showinfo(
+            "ZIP",
+            f"Создано архивов: {len(created)} из {len(rows)}\nФайлов внутри: {total_files}"
+            f"\n\nУспешно:\n{ok_text}{extra_ok}"
+            f"\n\nОшибки:\n{err_text}{extra_err}"
+        )
 
     def _csp_copy_field(self, field: str):
         row = self._csp_get_first_selected_row()
