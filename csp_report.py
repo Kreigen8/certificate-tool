@@ -55,6 +55,10 @@ def write_csp_report(path, rows):
 <sheetFormatPr defaultRowHeight="30"/>
 <cols><col min="1" max="1" width="7" customWidth="1"/><col min="2" max="2" width="55" customWidth="1"/><col min="3" max="3" width="36" customWidth="1"/><col min="4" max="4" width="38" customWidth="1"/><col min="5" max="5" width="24" customWidth="1"/></cols>
 <sheetData>{''.join(sheet_rows)}</sheetData><autoFilter ref="A1:E{last}"/>
+<conditionalFormatting sqref="A2:E{last}">
+<cfRule type="expression" dxfId="0" priority="1" stopIfTrue="1"><formula>AND(ISNUMBER($E2),$E2&lt;TODAY())</formula></cfRule>
+<cfRule type="expression" dxfId="1" priority="2"><formula>AND(ISNUMBER($E2),$E2&gt;=TODAY(),$E2&lt;=TODAY()+30)</formula></cfRule>
+</conditionalFormatting>
 <pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/>
 <pageSetup paperSize="9" orientation="landscape"/>
 </worksheet>'''
@@ -70,7 +74,8 @@ def write_csp_report(path, rows):
 <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>
 <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
 <xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
-</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'''
+</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+<dxfs count="2"><dxf><fill><patternFill patternType="solid"><fgColor rgb="FFFFDADA"/><bgColor rgb="FFFFDADA"/></patternFill></fill></dxf><dxf><fill><patternFill patternType="solid"><fgColor rgb="FFFFF1CC"/><bgColor rgb="FFFFF1CC"/></patternFill></fill></dxf></dxfs></styleSheet>'''
     parts = {
         '[Content_Types].xml': '''<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>''',
         '_rels/.rels': '''<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>''',

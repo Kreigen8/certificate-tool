@@ -10,6 +10,7 @@ from cryptography import x509
 from cryptography.x509.oid import NameOID
 
 import cer_tool_gui as gui
+import enhanced_ui
 from csp_report import HEADERS, write_csp_report
 
 
@@ -65,7 +66,7 @@ class ReportTests(unittest.TestCase):
              patch.object(gui.messagebox, 'showinfo') as info, \
              patch.object(gui.messagebox, 'showerror') as error, \
              patch.object(gui.filedialog, 'asksaveasfilename') as save, \
-             patch.object(gui, 'write_csp_report', return_value=2) as writer:
+             patch.object(enhanced_ui, 'write_csp_report', return_value=2) as writer:
             app = gui.App()
             app.withdraw()
             try:
