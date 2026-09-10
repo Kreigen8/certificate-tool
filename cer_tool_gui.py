@@ -12,6 +12,7 @@ from ctypes import wintypes
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.x509.oid import NameOID
+from csp_report import write_csp_report
 
 
 # =========================
@@ -137,6 +138,23 @@ def get_cn_or_subject(cert: x509.Certificate) -> str:
     except Exception:
         pass
     return cert.subject.rfc4514_string() or ""
+
+
+def get_certificate_report_fields(cert: x509.Certificate) -> dict:
+    def value(oid):
+        attributes = cert.subject.get_attributes_for_oid(oid)
+        return str(attributes[0].value).strip() if attributes else ""
+
+    surname = value(NameOID.SURNAME)
+    given_name = value(NameOID.GIVEN_NAME)
+    full_name = " ".join(part for part in (surname, given_name) if part)
+    if not (surname and given_name):
+        full_name = value(NameOID.COMMON_NAME) or full_name
+    return {
+        "organization": value(NameOID.ORGANIZATION_NAME),
+        "position": value(NameOID.TITLE),
+        "full_name": full_name,
+    }
 
 
 def cert_is_expired(cert: x509.Certificate) -> bool:
@@ -1395,6 +1413,9 @@ class App(tk.Tk):
         self.search_csp_var = tk.StringVar(value="")
         ttk.Entry(search, textvariable=self.search_csp_var, width=44).pack(side="left", padx=8)
         ttk.Button(search, text="Сброс", command=lambda: self.search_csp_var.set("")).pack(side="left")
+        self.csp_report_button = ttk.Button(search, text="Отчет", command=self.csp_report)
+        self.csp_report_button.pack(side="left", padx=20)
+        ToolTip(self.csp_report_button, "Сохранить XLSX по показанным контейнерам с сертификатами. Срок — дата окончания.")
         self.search_csp_var.trace_add("write", lambda *_: self._render_csp_filtered())
 
         cols = ("scope", "provider", "container", "unique", "cn", "serial", "thumb", "export", "cert_in", "start", "end", "status")
@@ -1598,6 +1619,7 @@ class App(tk.Tk):
                         "status": status,
                         "is_expired": is_exp,
                         "has_cert": True,
+                        **get_certificate_report_fields(cert),
                     }
 
                     if key in best_by_key:
@@ -1664,6 +1686,27 @@ class App(tk.Tk):
             if iid in m:
                 out.append(m[iid])
         return out
+
+    def csp_report(self):
+        rows = [row for row in self._csp_rows_by_iids(self.tree_csp.get_children(""))
+                if row.get("has_cert")]
+        if not rows:
+            messagebox.showinfo("Отчет", "Нет сертификатов для отчета. Нажмите «Показать контейнеры» и проверьте фильтр поиска.")
+            return
+        filename = filedialog.asksaveasfilename(
+            parent=self, title="Сохранить отчет по ЭЦП", defaultextension=".xlsx",
+            filetypes=[("Книга Excel", "*.xlsx")],
+            initialfile=f"Реестр_сроков_ЭЦП_{datetime.now():%Y-%m-%d}.xlsx",
+        )
+        if not filename:
+            return
+        try:
+            count = write_csp_report(filename, rows)
+        except Exception as exc:
+            messagebox.showerror("Отчет", f"Не удалось сохранить отчет.\n{exc}")
+            return
+        self.status_var.set(f"Отчет сохранен: {filename}. Записей: {count}.")
+        messagebox.showinfo("Отчет", f"Отчет сохранен:\n{filename}\n\nЗаписей: {count}.")
 
     def csp_delete_expired(self):
         if not self.csp_rows:
